@@ -13,12 +13,18 @@ from keep_alive import keep_alive
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def vprint(message: str) -> None:
+    print(f"{BOT_VERSION} {message}")
+
 # Load environment variables
 load_dotenv()
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 CHECK_INTERVAL = 300  # 5 minutes
-BOT_VERSION = "#2"  # Version counter
+BOT_VERSION = "#3"  # Version counter
+GUILD_ID = os.getenv('GUILD_ID')
+GUILD_ID = int(GUILD_ID) if GUILD_ID and GUILD_ID.isdigit() else None
 
 # Bot configuration
 intents = discord.Intents.default()
@@ -58,29 +64,46 @@ def save_tracking_data():
 
 # Fetch Roblox status
 async def fetch_roblox_status():
+    urls = [
+        'https://status.roblox.com/data/status.json',
+        'https://status.roblox.com/api/v2/status.json'
+    ]
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (RobloxStatusTracker)'
+    }
+
+    timeout = aiohttp.ClientTimeout(total=10)
+
     try:
-        async with aiohttp.ClientSession() as session:
-            url = 'https://status.roblox.com/data/status.json'
-            async with session.get(url) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    status_info = data.get('status', {})
-                    description = status_info.get('description', 'Unknown')
-                    indicator = status_info.get('indicator', 'unknown')
-                    
-                    logger.info(f"✅ Fetched Roblox status: {description} ({indicator})")
-                    
-                    return {
-                        'description': description,
-                        'indicator': indicator
-                    }
-                else:
-                    logger.error(f"Failed to fetch status: HTTP {resp.status}")
-                    print(f"❌ API Error: HTTP {resp.status}")
-                    return None
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            for url in urls:
+                try:
+                    async with session.get(url) as resp:
+                        if resp.status != 200:
+                            logger.warning(f"Status API HTTP {resp.status} for {url}")
+                            continue
+
+                        data = await resp.json()
+                        status_info = data.get('status', {})
+                        description = status_info.get('description', 'Unknown')
+                        indicator = status_info.get('indicator', 'unknown')
+
+                        if description:
+                            logger.info(f"✅ Fetched Roblox status: {description} ({indicator})")
+                            return {
+                                'description': description,
+                                'indicator': indicator
+                            }
+                except Exception as e:
+                    logger.warning(f"Status API failed for {url}: {e}")
+                    continue
+
+        vprint("❌ API Error: Could not fetch Roblox status")
+        return None
     except Exception as e:
         logger.error(f"Error fetching Roblox status: {e}")
-        print(f"❌ Fetch error: {e}")
+        vprint(f"❌ Fetch error: {e}")
         return None
 
 # Create embed for status update
@@ -127,31 +150,58 @@ def create_status_embed(status_description, indicator, is_test=False):
 @client.event
 async def on_ready():
     logger.info(f'Bot Version {BOT_VERSION} - {client.user} has connected to Discord!')
-    print(f'═══════════════════════════════════════')
-    print(f'  Bot Version: {BOT_VERSION}')
-    print(f'  Connected as: {client.user}')
-    print(f'  Bot ID: {client.user.id}')
-    print(f'═══════════════════════════════════════')
+    vprint('═══════════════════════════════════════')
+    vprint(f'Bot Version: {BOT_VERSION}')
+    vprint(f'Connected as: {client.user}')
+    vprint(f'Bot ID: {client.user.id}')
+    vprint('═══════════════════════════════════════')
     
     # Load saved tracking data
     load_tracking_data()
     
     # Sync slash commands
     try:
-        synced = await tree.sync()
-        logger.info(f"Synced {len(synced)} command(s)")
-        print(f'✅ Synced {len(synced)} slash command(s)')
+        if GUILD_ID:
+            guild = discord.Object(id=GUILD_ID)
+            tree.copy_global_to(guild=guild)
+            synced = await tree.sync(guild=guild)
+            logger.info(f"Synced {len(synced)} command(s) to guild {GUILD_ID}")
+            vprint(f'✅ Synced {len(synced)} slash command(s) to guild {GUILD_ID}')
+        else:
+            synced = await tree.sync()
+            logger.info(f"Synced {len(synced)} command(s) globally")
+            vprint(f'✅ Synced {len(synced)} slash command(s) globally')
     except Exception as e:
         logger.error(f"Failed to sync commands: {e}")
-        print(f'❌ Failed to sync commands: {e}')
+        vprint(f'❌ Failed to sync commands: {e}')
     
     # Start background task
     client.loop.create_task(check_roblox_status())
-    print(f'🔄 Background status checker started')
-    print(f'═══════════════════════════════════════\n')
+    vprint('🔄 Background status checker started')
+    vprint('═══════════════════════════════════════')
+
+
+@tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message(
+            "❌ Admin-Rechte erforderlich, um diesen Command zu nutzen.",
+            ephemeral=True
+        )
+        return
+
+    logger.error(f"App command error: {error}")
+    try:
+        await interaction.response.send_message(
+            "❌ Es gab einen Fehler beim Ausfuehren des Commands.",
+            ephemeral=True
+        )
+    except Exception:
+        pass
 
 @tree.command(name='version', description='Show bot version (Admin only)')
 @app_commands.default_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
 async def version(interaction: discord.Interaction):
     """Show current bot version - Admin only"""
     try:
@@ -177,6 +227,7 @@ async def version(interaction: discord.Interaction):
 
 @tree.command(name='rbxupdate', description='Set this channel for Roblox status notifications (Admin only)')
 @app_commands.default_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
 async def rbxupdate(interaction: discord.Interaction):
     """Slash command to set the tracking channel and send a test message - Admin only"""
     try:
@@ -224,7 +275,7 @@ async def check_roblox_status():
     """Background task to check Roblox status every 5 minutes"""
     await client.wait_until_ready()
     logger.info(f"Background status checker started (Version {BOT_VERSION})")
-    print(f"🔄 Status checker active - checking every {CHECK_INTERVAL // 60} minutes\n")
+    vprint(f"🔄 Status checker active - checking every {CHECK_INTERVAL // 60} minutes")
     
     while not client.is_closed():
         try:
@@ -242,9 +293,9 @@ async def check_roblox_status():
                         # Check if status changed
                         if tracking_data['last_status'] != current_status:
                             logger.info(f"🔔 Status changed: '{tracking_data['last_status']}' -> '{current_status}'")
-                            print(f"🔔 STATUS CHANGE DETECTED!")
-                            print(f"   Old: {tracking_data['last_status']}")
-                            print(f"   New: {current_status}\n")
+                            vprint("🔔 STATUS CHANGE DETECTED!")
+                            vprint(f"Old: {tracking_data['last_status']}")
+                            vprint(f"New: {current_status}")
                             
                             # Send update
                             embed = create_status_embed(
@@ -266,7 +317,7 @@ async def check_roblox_status():
         
         except Exception as e:
             logger.error(f"Error in status check loop: {e}")
-            print(f"❌ Status check error: {e}")
+            vprint(f"❌ Status check error: {e}")
         
         # Wait 5 minutes before next check
         await asyncio.sleep(CHECK_INTERVAL)
@@ -274,32 +325,32 @@ async def check_roblox_status():
 # Run the bot
 if __name__ == "__main__":
     try:
-        print(f'═══════════════════════════════════════')
-        print(f'  Starting Roblox Status Tracker')
-        print(f'  Version: {BOT_VERSION}')
-        print(f'═══════════════════════════════════════\n')
+        vprint('═══════════════════════════════════════')
+        vprint('Starting Roblox Status Tracker')
+        vprint(f'Version: {BOT_VERSION}')
+        vprint('═══════════════════════════════════════')
         
         # Check if token exists
         if not TOKEN:
-            print("❌ ERROR: DISCORD_TOKEN not found in environment!")
-            print("Please set DISCORD_TOKEN in Replit Secrets")
+            vprint("❌ ERROR: DISCORD_TOKEN not found in environment!")
+            vprint("Please set DISCORD_TOKEN in Replit Secrets")
             exit(1)
         
         # Start Flask webserver for Replit
         keep_alive()
-        print("✅ Webserver started on port 8080")
+        vprint("✅ Webserver started on port 8080")
         
         logger.info(f"Starting bot version {BOT_VERSION}...")
         client.run(TOKEN)
     except KeyboardInterrupt:
         logger.info("Bot shutdown requested")
-        print("\n⚠️ Bot shutdown by user")
+        vprint("⚠️ Bot shutdown by user")
     except discord.LoginFailure:
         logger.error("Invalid Discord token!")
-        print("\n❌ ERROR: Invalid Discord token!")
-        print("Please check your DISCORD_TOKEN in Replit Secrets")
+        vprint("❌ ERROR: Invalid Discord token!")
+        vprint("Please check your DISCORD_TOKEN in Replit Secrets")
     except Exception as e:
         logger.error(f"Bot crashed: {e}")
-        print(f"\n❌ ERROR: Bot crashed - {e}")
+        vprint(f"❌ ERROR: Bot crashed - {e}")
         import traceback
         traceback.print_exc()
