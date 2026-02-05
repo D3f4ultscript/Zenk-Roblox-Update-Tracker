@@ -1,0 +1,12 @@
+[tool.poetry]
+name = "roblox-status-tracker"
+version = "1.0.0"
+description = "Discord bot that tracks Roblox status updates"
+authors = ["Your Name"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+discord-py = "2.6.1"
+python-dotenv = "1.0.1"
+aiohttp = "3.10.5"
+flask = "3.0.2"

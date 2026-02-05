@@ -1,4 +1,8 @@
+# Environment variables
 .env
+.env.local
+
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -22,5 +26,24 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-.DS_Store
+
+# Bot data
 tracking_data.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Replit
+.replit
+.upm
+.cache
+replit.nix
+.config/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
