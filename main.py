@@ -18,6 +18,7 @@ load_dotenv()
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 CHECK_INTERVAL = 300  # 5 minutes
+BOT_VERSION = "#2"  # Version counter
 
 # Bot configuration
 intents = discord.Intents.default()
@@ -59,14 +60,15 @@ def save_tracking_data():
 async def fetch_roblox_status():
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get('https://status.roblox.com/data/status.json') as resp:
+            url = 'https://status.roblox.com/data/status.json'
+            async with session.get(url) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     status_info = data.get('status', {})
                     description = status_info.get('description', 'Unknown')
                     indicator = status_info.get('indicator', 'unknown')
                     
-                    logger.info(f"Fetched Roblox status: {description}")
+                    logger.info(f"✅ Fetched Roblox status: {description} ({indicator})")
                     
                     return {
                         'description': description,
@@ -74,9 +76,11 @@ async def fetch_roblox_status():
                     }
                 else:
                     logger.error(f"Failed to fetch status: HTTP {resp.status}")
+                    print(f"❌ API Error: HTTP {resp.status}")
                     return None
     except Exception as e:
         logger.error(f"Error fetching Roblox status: {e}")
+        print(f"❌ Fetch error: {e}")
         return None
 
 # Create embed for status update
@@ -122,8 +126,12 @@ def create_status_embed(status_description, indicator, is_test=False):
 
 @client.event
 async def on_ready():
-    logger.info(f'{client.user} has connected to Discord!')
-    print(f'{client.user} has connected to Discord!')
+    logger.info(f'Bot Version {BOT_VERSION} - {client.user} has connected to Discord!')
+    print(f'═══════════════════════════════════════')
+    print(f'  Bot Version: {BOT_VERSION}')
+    print(f'  Connected as: {client.user}')
+    print(f'  Bot ID: {client.user.id}')
+    print(f'═══════════════════════════════════════')
     
     # Load saved tracking data
     load_tracking_data()
@@ -132,15 +140,45 @@ async def on_ready():
     try:
         synced = await tree.sync()
         logger.info(f"Synced {len(synced)} command(s)")
+        print(f'✅ Synced {len(synced)} slash command(s)')
     except Exception as e:
         logger.error(f"Failed to sync commands: {e}")
+        print(f'❌ Failed to sync commands: {e}')
     
     # Start background task
     client.loop.create_task(check_roblox_status())
+    print(f'🔄 Background status checker started')
+    print(f'═══════════════════════════════════════\n')
 
-@tree.command(name='rbxupdate', description='Set this channel for Roblox status notifications')
+@tree.command(name='version', description='Show bot version (Admin only)')
+@app_commands.default_permissions(administrator=True)
+async def version(interaction: discord.Interaction):
+    """Show current bot version - Admin only"""
+    try:
+        embed = discord.Embed(
+            title="🤖 Bot Version",
+            description=f"Current Version: **{BOT_VERSION}**",
+            color=discord.Color.blue(),
+            timestamp=datetime.now()
+        )
+        embed.add_field(name="Bot Name", value=client.user.name, inline=True)
+        embed.add_field(name="Bot ID", value=client.user.id, inline=True)
+        embed.add_field(name="Check Interval", value=f"{CHECK_INTERVAL // 60} minutes", inline=True)
+        embed.set_footer(text="Roblox Status Tracker")
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        logger.info(f"Version command used by {interaction.user}")
+    except Exception as e:
+        logger.error(f"Error in version command: {e}")
+        try:
+            await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+        except:
+            pass
+
+@tree.command(name='rbxupdate', description='Set this channel for Roblox status notifications (Admin only)')
+@app_commands.default_permissions(administrator=True)
 async def rbxupdate(interaction: discord.Interaction):
-    """Slash command to set the tracking channel and send a test message"""
+    """Slash command to set the tracking channel and send a test message - Admin only"""
     try:
         # Set channel
         tracking_data['channel_id'] = interaction.channel.id
@@ -185,7 +223,8 @@ async def rbxupdate(interaction: discord.Interaction):
 async def check_roblox_status():
     """Background task to check Roblox status every 5 minutes"""
     await client.wait_until_ready()
-    logger.info("Started background status checker")
+    logger.info(f"Background status checker started (Version {BOT_VERSION})")
+    print(f"🔄 Status checker active - checking every {CHECK_INTERVAL // 60} minutes\n")
     
     while not client.is_closed():
         try:
@@ -202,7 +241,10 @@ async def check_roblox_status():
                         
                         # Check if status changed
                         if tracking_data['last_status'] != current_status:
-                            logger.info(f"Status changed: '{tracking_data['last_status']}' -> '{current_status}'")
+                            logger.info(f"🔔 Status changed: '{tracking_data['last_status']}' -> '{current_status}'")
+                            print(f"🔔 STATUS CHANGE DETECTED!")
+                            print(f"   Old: {tracking_data['last_status']}")
+                            print(f"   New: {current_status}\n")
                             
                             # Send update
                             embed = create_status_embed(
@@ -216,14 +258,15 @@ async def check_roblox_status():
                             tracking_data['last_status'] = current_status
                             save_tracking_data()
                         else:
-                            logger.info(f"Status unchanged: {current_status}")
+                            logger.debug(f"Status unchanged: {current_status}")
                 else:
                     logger.warning(f"Channel {tracking_data['channel_id']} not found")
             else:
-                logger.info("No channel set for tracking")
+                logger.debug("No channel set for tracking")
         
         except Exception as e:
             logger.error(f"Error in status check loop: {e}")
+            print(f"❌ Status check error: {e}")
         
         # Wait 5 minutes before next check
         await asyncio.sleep(CHECK_INTERVAL)
@@ -231,12 +274,32 @@ async def check_roblox_status():
 # Run the bot
 if __name__ == "__main__":
     try:
+        print(f'═══════════════════════════════════════')
+        print(f'  Starting Roblox Status Tracker')
+        print(f'  Version: {BOT_VERSION}')
+        print(f'═══════════════════════════════════════\n')
+        
+        # Check if token exists
+        if not TOKEN:
+            print("❌ ERROR: DISCORD_TOKEN not found in environment!")
+            print("Please set DISCORD_TOKEN in Replit Secrets")
+            exit(1)
+        
         # Start Flask webserver for Replit
         keep_alive()
+        print("✅ Webserver started on port 8080")
         
-        logger.info("Starting bot...")
+        logger.info(f"Starting bot version {BOT_VERSION}...")
         client.run(TOKEN)
     except KeyboardInterrupt:
         logger.info("Bot shutdown requested")
+        print("\n⚠️ Bot shutdown by user")
+    except discord.LoginFailure:
+        logger.error("Invalid Discord token!")
+        print("\n❌ ERROR: Invalid Discord token!")
+        print("Please check your DISCORD_TOKEN in Replit Secrets")
     except Exception as e:
         logger.error(f"Bot crashed: {e}")
+        print(f"\n❌ ERROR: Bot crashed - {e}")
+        import traceback
+        traceback.print_exc()
