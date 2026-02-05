@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands, tasks
+from discord import app_commands
 import aiohttp
 import os
 from dotenv import load_dotenv
@@ -7,6 +8,11 @@ import json
 from datetime import datetime
 from aiohttp import web
 import asyncio
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -18,7 +24,15 @@ PORT = int(os.getenv('PORT', 5000))
 # Bot configuration
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='/', intents=intents)
+bot = commands.Bot(command_prefix='/', intents=intents, sync_commands_on_load=True)
+
+# Sync app commands with Discord
+async def sync_commands():
+    try:
+        synced = await bot.tree.sync()
+        logger.info(f"Synced {len(synced)} command(s) with Discord")
+    except Exception as e:
+        logger.error(f"Failed to sync commands: {e}")
 
 # Store tracking data
 tracking_data = {
@@ -84,27 +98,35 @@ def create_update_embed(version, component_name):
 
 @bot.event
 async def on_ready():
+    logger.info(f'{bot.user} has connected to Discord!')
     print(f'{bot.user} has connected to Discord!')
     load_tracking_data()
+    # Sync slash commands with Discord
+    await sync_commands()
     # Start the background task
     check_roblox_updates.start()
 
-@bot.command(name='rbxupdate', description='Set the channel for Roblox update notifications')
-async def rbxupdate(ctx):
-    """Command to set the tracking channel and send a test message"""
-    tracking_data['channel_id'] = ctx.channel.id
-    save_tracking_data()
-    
-    # Fetch current Roblox status for test message
-    roblox_info = await fetch_roblox_status()
-    
-    if roblox_info:
-        embed = create_update_embed(roblox_info['version'], roblox_info['component_name'])
-        embed.add_field(name="Test Message", value="✅ This is a test notification", inline=False)
-        await ctx.send(embed=embed)
-        await ctx.send(f"✅ Channel set to {ctx.channel.mention} for Roblox updates!")
-    else:
-        await ctx.send("❌ Could not fetch Roblox status. Please try again later.")
+@bot.tree.command(name='rbxupdate', description='Set the channel for Roblox update notifications and get test message')
+async def rbxupdate(interaction: discord.Interaction):
+    """Slash command to set the tracking channel and send a test message"""
+    try:
+        tracking_data['channel_id'] = interaction.channel.id
+        save_tracking_data()
+        
+        # Fetch current Roblox status for test message
+        roblox_info = await fetch_roblox_status()
+        
+        if roblox_info:
+            embed = create_update_embed(roblox_info['version'], roblox_info['component_name'])
+            embed.add_field(name="Test Message", value="✅ This is a test notification", inline=False)
+            await interaction.response.send_message(embed=embed)
+            # Send confirmation
+            await interaction.followup.send(f"✅ Channel set to {interaction.channel.mention} for Roblox updates!", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Could not fetch Roblox status. Please try again later.", ephemeral=True)
+    except Exception as e:
+        logger.error(f"Error in rbxupdate command: {e}")
+        await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
 
 @tasks.loop(minutes=5)
 async def check_roblox_updates():
@@ -157,15 +179,25 @@ async def start_server():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
-    print(f'HTTP Server started on port {PORT}')
+    logger.info(f'HTTP Server started on port {PORT}')
 
 async def main():
-    # Start the HTTP server
-    await start_server()
-    # Start the Discord bot
-    async with bot:
-        await bot.start(TOKEN)
+    try:
+        # Start the HTTP server
+        await start_server()
+        logger.info('Starting Discord bot...')
+        # Start the Discord bot
+        async with bot:
+            await bot.start(TOKEN)
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        raise
 
 # Run the bot
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot shutdown requested")
+    except Exception as e:
+        logger.error(f"Bot crashed: {e}")
