@@ -22,7 +22,7 @@ load_dotenv()
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 CHECK_INTERVAL = 300  # 5 minutes
-BOT_VERSION = "#3"  # Version counter
+BOT_VERSION = "#4"  # Version counter
 GUILD_ID = os.getenv('GUILD_ID')
 GUILD_ID = int(GUILD_ID) if GUILD_ID and GUILD_ID.isdigit() else None
 
@@ -35,7 +35,7 @@ tree = app_commands.CommandTree(client)
 # Store tracking data
 tracking_data = {
     'channel_id': None,
-    'last_status': None
+    'last_entry_id': None
 }
 
 # File to persist tracking data
@@ -51,7 +51,14 @@ def load_tracking_data():
                 logger.info(f"Loaded tracking data: {tracking_data}")
         except Exception as e:
             logger.error(f"Error loading tracking data: {e}")
-            tracking_data = {'channel_id': None, 'last_status': None}
+            tracking_data = {'channel_id': None, 'last_entry_id': None}
+
+    # Migrate old keys if needed
+    if 'last_entry_id' not in tracking_data:
+        tracking_data['last_entry_id'] = None
+    if 'channel_id' not in tracking_data:
+        tracking_data['channel_id'] = None
+    tracking_data.pop('last_status', None)
 
 # Save tracking data to file
 def save_tracking_data():
@@ -62,15 +69,15 @@ def save_tracking_data():
     except Exception as e:
         logger.error(f"Error saving tracking data: {e}")
 
-# Fetch Roblox status
-async def fetch_roblox_status():
+# Fetch latest Roblox update from RSS
+async def fetch_latest_update():
     urls = [
-        'https://status.roblox.com/data/status.json',
-        'https://status.roblox.com/api/v2/status.json'
+        'https://devforum.roblox.com/c/updates.rss',
+        'https://blog.roblox.com/feed/'
     ]
 
     headers = {
-        'User-Agent': 'Mozilla/5.0 (RobloxStatusTracker)'
+        'User-Agent': 'Mozilla/5.0 (RobloxUpdateTracker)'
     }
 
     timeout = aiohttp.ClientTimeout(total=10)
@@ -81,70 +88,82 @@ async def fetch_roblox_status():
                 try:
                     async with session.get(url) as resp:
                         if resp.status != 200:
-                            logger.warning(f"Status API HTTP {resp.status} for {url}")
+                            logger.warning(f"RSS HTTP {resp.status} for {url}")
                             continue
 
-                        data = await resp.json()
-                        status_info = data.get('status', {})
-                        description = status_info.get('description', 'Unknown')
-                        indicator = status_info.get('indicator', 'unknown')
-
-                        if description:
-                            logger.info(f"✅ Fetched Roblox status: {description} ({indicator})")
-                            return {
-                                'description': description,
-                                'indicator': indicator
-                            }
+                        text = await resp.text()
+                        latest = parse_rss_latest(text)
+                        if latest:
+                            logger.info(f"✅ Latest RSS update: {latest['title']}")
+                            return latest
                 except Exception as e:
-                    logger.warning(f"Status API failed for {url}: {e}")
+                    logger.warning(f"RSS fetch failed for {url}: {e}")
                     continue
 
-        vprint("❌ API Error: Could not fetch Roblox status")
+        vprint("❌ RSS Error: Could not fetch Roblox updates")
         return None
     except Exception as e:
-        logger.error(f"Error fetching Roblox status: {e}")
+        logger.error(f"Error fetching RSS: {e}")
         vprint(f"❌ Fetch error: {e}")
         return None
 
+
+def parse_rss_latest(xml_text: str) -> dict | None:
+    try:
+        import xml.etree.ElementTree as ET
+
+        root = ET.fromstring(xml_text)
+        channel = root.find('channel')
+        if channel is None:
+            return None
+
+        item = channel.find('item')
+        if item is None:
+            return None
+
+        title = item.findtext('title', default='(No title)').strip()
+        link = item.findtext('link', default='').strip()
+        pub_date = item.findtext('pubDate', default='').strip()
+        guid = item.findtext('guid', default=link).strip()
+
+        if not guid:
+            guid = link or title
+
+        return {
+            'id': guid,
+            'title': title,
+            'link': link,
+            'published': pub_date
+        }
+    except Exception as e:
+        logger.warning(f"RSS parse error: {e}")
+        return None
+
 # Create embed for status update
-def create_status_embed(status_description, indicator, is_test=False):
-    # Choose color based on indicator
-    color_map = {
-        'none': discord.Color.green(),
-        'minor': discord.Color.gold(),
-        'major': discord.Color.orange(),
-        'critical': discord.Color.red()
-    }
-    color = color_map.get(indicator, discord.Color.blue())
-    
-    # Choose emoji based on indicator
-    emoji_map = {
-        'none': '✅',
-        'minor': '⚠️',
-        'major': '🔴',
-        'critical': '🚨'
-    }
-    emoji = emoji_map.get(indicator, '🎮')
-    
-    title = f"{emoji} Roblox Status Update"
+def create_update_embed(update: dict, is_test: bool = False) -> discord.Embed:
+    title = "📰 Roblox Update"
     if is_test:
         title += " (Test)"
-    
+
     embed = discord.Embed(
         title=title,
-        description=status_description,
-        color=color,
+        description=update.get('title', '(No title)'),
+        color=discord.Color.blue(),
         timestamp=datetime.now()
     )
-    
-    embed.add_field(name="Status Indicator", value=f"`{indicator}`", inline=True)
-    embed.add_field(name="Source", value="[Roblox Status](https://status.roblox.com)", inline=True)
-    
+
+    link = update.get('link') or ""
+    published = update.get('published') or ""
+
+    if link:
+        embed.add_field(name="Link", value=link, inline=False)
+    if published:
+        embed.add_field(name="Published", value=published, inline=True)
+
     if is_test:
         embed.add_field(name="Test Message", value="✅ This is a test notification", inline=False)
-    
+
     embed.set_footer(text="Roblox Update Tracker")
-    
     return embed
 
 @client.event
@@ -171,6 +190,9 @@ async def on_ready():
             synced = await tree.sync()
             logger.info(f"Synced {len(synced)} command(s) globally")
             vprint(f'✅ Synced {len(synced)} slash command(s) globally')
+
+        command_names = [cmd.name for cmd in tree.get_commands()]
+        vprint(f"Commands registered: {', '.join(command_names)}")
     except Exception as e:
         logger.error(f"Failed to sync commands: {e}")
         vprint(f'❌ Failed to sync commands: {e}')
@@ -225,7 +247,7 @@ async def version(interaction: discord.Interaction):
         except:
             pass
 
-@tree.command(name='rbxupdate', description='Set this channel for Roblox status notifications (Admin only)')
+@tree.command(name='rbxupdate', description='Set this channel for Roblox update notifications (Admin only)')
 @app_commands.default_permissions(administrator=True)
 @app_commands.checks.has_permissions(administrator=True)
 async def rbxupdate(interaction: discord.Interaction):
@@ -235,33 +257,29 @@ async def rbxupdate(interaction: discord.Interaction):
         tracking_data['channel_id'] = interaction.channel.id
         save_tracking_data()
         
-        # Fetch current status
-        status_info = await fetch_roblox_status()
-        
-        if status_info:
-            # Update last status
-            tracking_data['last_status'] = status_info['description']
+        # Fetch latest update
+        latest_update = await fetch_latest_update()
+
+        if latest_update:
+            # Update last entry
+            tracking_data['last_entry_id'] = latest_update['id']
             save_tracking_data()
-            
+
             # Send test message
-            embed = create_status_embed(
-                status_info['description'],
-                status_info['indicator'],
-                is_test=True
-            )
+            embed = create_update_embed(latest_update, is_test=True)
             await interaction.response.send_message(embed=embed)
-            
+
             # Confirmation
             await interaction.followup.send(
-                f"✅ Channel set to {interaction.channel.mention} for Roblox status updates!\n"
-                f"🔄 Checking every 5 minutes for status changes.",
+                f"✅ Channel set to {interaction.channel.mention} for Roblox updates!\n"
+                f"🔄 Checking every 5 minutes for new posts.",
                 ephemeral=True
             )
-            
+
             logger.info(f"Channel set to {interaction.channel.id} by {interaction.user}")
         else:
             await interaction.response.send_message(
-                "❌ Could not fetch Roblox status. Please try again later.",
+                "❌ Could not fetch Roblox updates. Please try again later.",
                 ephemeral=True
             )
     except Exception as e:
@@ -272,7 +290,7 @@ async def rbxupdate(interaction: discord.Interaction):
             pass
 
 async def check_roblox_status():
-    """Background task to check Roblox status every 5 minutes"""
+    """Background task to check Roblox updates every 5 minutes"""
     await client.wait_until_ready()
     logger.info(f"Background status checker started (Version {BOT_VERSION})")
     vprint(f"🔄 Status checker active - checking every {CHECK_INTERVAL // 60} minutes")
@@ -284,32 +302,29 @@ async def check_roblox_status():
                 channel = client.get_channel(tracking_data['channel_id'])
                 
                 if channel:
-                    # Fetch current status
-                    status_info = await fetch_roblox_status()
-                    
-                    if status_info:
-                        current_status = status_info['description']
-                        
-                        # Check if status changed
-                        if tracking_data['last_status'] != current_status:
-                            logger.info(f"🔔 Status changed: '{tracking_data['last_status']}' -> '{current_status}'")
-                            vprint("🔔 STATUS CHANGE DETECTED!")
-                            vprint(f"Old: {tracking_data['last_status']}")
-                            vprint(f"New: {current_status}")
-                            
-                            # Send update
-                            embed = create_status_embed(
-                                current_status,
-                                status_info['indicator'],
-                                is_test=False
+                    # Fetch latest update
+                    latest_update = await fetch_latest_update()
+
+                    if latest_update:
+                        latest_id = latest_update['id']
+
+                        # Check if update changed
+                        if tracking_data['last_entry_id'] != latest_id:
+                            logger.info(
+                                f"🔔 New update: '{tracking_data['last_entry_id']}' -> '{latest_id}'"
                             )
+                            vprint("🔔 NEW UPDATE DETECTED!")
+                            vprint(f"Title: {latest_update.get('title', '')}")
+
+                            # Send update
+                            embed = create_update_embed(latest_update, is_test=False)
                             await channel.send(embed=embed)
-                            
-                            # Update stored status
-                            tracking_data['last_status'] = current_status
+
+                            # Update stored entry
+                            tracking_data['last_entry_id'] = latest_id
                             save_tracking_data()
                         else:
-                            logger.debug(f"Status unchanged: {current_status}")
+                            logger.debug("No new updates")
                 else:
                     logger.warning(f"Channel {tracking_data['channel_id']} not found")
             else:
