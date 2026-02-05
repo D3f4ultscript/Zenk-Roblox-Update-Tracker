@@ -5,12 +5,15 @@ import os
 from dotenv import load_dotenv
 import json
 from datetime import datetime
+from aiohttp import web
+import asyncio
 
 # Load environment variables
 load_dotenv()
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 CLIENT_ID = os.getenv('CLIENT_ID')
+PORT = int(os.getenv('PORT', 5000))
 
 # Bot configuration
 intents = discord.Intents.default()
@@ -143,6 +146,26 @@ async def before_check_updates():
     """Wait until bot is ready before starting background task"""
     await bot.wait_until_ready()
 
+# HTTP Server for Render
+async def health_check(request):
+    return web.Response(text='Bot is running!')
+
+async def start_server():
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    print(f'HTTP Server started on port {PORT}')
+
+async def main():
+    # Start the HTTP server
+    await start_server()
+    # Start the Discord bot
+    async with bot:
+        await bot.start(TOKEN)
+
 # Run the bot
 if __name__ == "__main__":
-    bot.run(TOKEN)
+    asyncio.run(main())
