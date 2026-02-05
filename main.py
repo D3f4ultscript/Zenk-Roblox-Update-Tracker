@@ -61,25 +61,86 @@ def save_tracking_data():
 # Fetch Roblox status and version
 async def fetch_roblox_status():
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get('https://status.roblox.com/api/v2/components.json') as response:
-                if response.status == 200:
-                    data = await response.json()
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            # Try multiple API endpoints
+            urls = [
+                'https://clientsettingscdn.roblox.com/v2/client-version/WindowsPlayer',
+                'https://setup.rbxcdn.com/DeployHistory.txt',
+                'https://setup.roblox.com/DeployHistory.txt',
+                'https://setup.roblox.com/version.txt'
+            ]
+            
+            for url in urls:
+                try:
+                    headers = {
+                        'User-Agent': 'Roblox/WinInet'
+                    }
                     
-                    # Find Windows Desktop Client component
-                    for component in data['components']:
-                        if 'Windows' in component['name'] and 'Desktop' in component['name']:
-                            version = component.get('description', 'Unknown')
-                            status = component.get('status', 'unknown')
-                            return {
-                                'version': version,
-                                'status': status,
-                                'component_name': component['name']
-                            }
-                    
-                    return None
+                    async with session.get(url, headers=headers) as response:
+                        logger.info(f"Trying {url} - Status: {response.status}")
+                        
+                        if response.status == 200:
+                            content_type = response.headers.get('Content-Type', '')
+                            
+                            # Handle JSON response (clientsettingscdn)
+                            if 'json' in content_type:
+                                data = await response.json()
+                                version = data.get('version') or data.get('clientVersionUpload')
+                                
+                                if version:
+                                    logger.info(f"Found Roblox version: {version}")
+                                    return {
+                                        'version': version,
+                                        'status': 'operational',
+                                        'component_name': 'Windows Desktop Client'
+                                    }
+                            
+                            # Handle text response (DeployHistory)
+                            else:
+                                text = await response.text()
+                                lines = text.strip().split('\n')
+                                
+                                if lines:
+                                    # First line is the latest version
+                                    latest_line = lines[0].strip()
+                                    logger.info(f"Response content: {latest_line}")
+                                    
+                                    # Check if it's just a version string
+                                    if latest_line.startswith('version-'):
+                                        version = latest_line
+                                        logger.info(f"Found Roblox version: {version}")
+                                        
+                                        return {
+                                            'version': version,
+                                            'status': 'operational',
+                                            'component_name': 'Windows Desktop Client'
+                                        }
+                                    
+                                    # Extract version from deploy history format
+                                    elif 'version-' in latest_line:
+                                        # Split by space and find the version part
+                                        parts = latest_line.split()
+                                        for part in parts:
+                                            if part.startswith('version-'):
+                                                version = part
+                                                
+                                                logger.info(f"Found Roblox version: {version}")
+                                                
+                                                return {
+                                                    'version': version,
+                                                    'status': 'operational',
+                                                    'component_name': 'Windows Desktop Client'
+                                                }
+                except Exception as e:
+                    logger.warning(f"Failed to fetch from {url}: {e}")
+                    continue
+            
+            logger.error("All API endpoints failed")
+            return None
+                
     except Exception as e:
-        print(f"Error fetching Roblox status: {e}")
+        logger.error(f"Error fetching Roblox status: {e}")
         return None
 
 # Create embed for update notification
