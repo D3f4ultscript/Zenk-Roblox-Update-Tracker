@@ -22,7 +22,7 @@ load_dotenv()
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 CHECK_INTERVAL = 300  # 5 minutes
-BOT_VERSION = "#4"  # Version counter
+BOT_VERSION = "#5"  # Version counter
 GUILD_ID = os.getenv('GUILD_ID')
 GUILD_ID = int(GUILD_ID) if GUILD_ID and GUILD_ID.isdigit() else None
 
