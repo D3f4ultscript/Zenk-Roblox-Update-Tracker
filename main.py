@@ -140,7 +140,7 @@ def parse_rss_latest(xml_text: str) -> dict | None:
         return None
 
 # Create embed for status update
-def create_update_embed(update: dict, is_test: bool = False) -> discord.Embed:
+def create_update_embed(update: dict, version: str | None, is_test: bool = False) -> discord.Embed:
     title = "📰 Roblox Update"
     if is_test:
         title += " (Test)"
@@ -155,6 +155,8 @@ def create_update_embed(update: dict, is_test: bool = False) -> discord.Embed:
     link = update.get('link') or ""
     published = update.get('published') or ""
 
+    if version:
+        embed.add_field(name="Version", value=version, inline=False)
     if link:
         embed.add_field(name="Link", value=link, inline=False)
     if published:
@@ -165,6 +167,32 @@ def create_update_embed(update: dict, is_test: bool = False) -> discord.Embed:
 
     embed.set_footer(text="Roblox Update Tracker")
     return embed
+
+
+async def fetch_client_version() -> str | None:
+    url = 'https://clientsettingscdn.roblox.com/v2/client-version/WindowsPlayer'
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (RobloxUpdateTracker)'
+    }
+    timeout = aiohttp.ClientTimeout(total=10)
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    logger.warning(f"Client version HTTP {resp.status}")
+                    return None
+
+                data = await resp.json()
+                version = data.get('version') or data.get('clientVersionUpload')
+                if version:
+                    logger.info(f"✅ Fetched client version: {version}")
+                    return version
+    except Exception as e:
+        logger.warning(f"Client version fetch failed: {e}")
+        return None
+
+    return None
 
 @client.event
 async def on_ready():
@@ -259,6 +287,7 @@ async def rbxupdate(interaction: discord.Interaction):
         
         # Fetch latest update
         latest_update = await fetch_latest_update()
+        client_version = await fetch_client_version()
 
         if latest_update:
             # Update last entry
@@ -266,7 +295,7 @@ async def rbxupdate(interaction: discord.Interaction):
             save_tracking_data()
 
             # Send test message
-            embed = create_update_embed(latest_update, is_test=True)
+            embed = create_update_embed(latest_update, client_version, is_test=True)
             await interaction.response.send_message(embed=embed)
 
             # Confirmation
@@ -304,6 +333,7 @@ async def check_roblox_status():
                 if channel:
                     # Fetch latest update
                     latest_update = await fetch_latest_update()
+                    client_version = await fetch_client_version()
 
                     if latest_update:
                         latest_id = latest_update['id']
@@ -317,7 +347,7 @@ async def check_roblox_status():
                             vprint(f"Title: {latest_update.get('title', '')}")
 
                             # Send update
-                            embed = create_update_embed(latest_update, is_test=False)
+                            embed = create_update_embed(latest_update, client_version, is_test=False)
                             await channel.send(embed=embed)
 
                             # Update stored entry
